@@ -76,7 +76,7 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 | WhatsApp Connection | Node.js (@whiskeysockets/baileys) | Connect to WhatsApp, send/receive messages |
 | Message Storage | SQLite (better-sqlite3) | Store messages for polling |
 | Container Runtime | Containers (Linux VMs) | Isolated environments for agent execution |
-| Agent | @anthropic-ai/claude-agent-sdk (0.2.29) | Run Claude with tools and MCP servers |
+| Agent | Claude Agent SDK + OpenAI-compatible mode | Run Claude tools flow or OpenAI chat-completions flow (with optional x402) |
 | Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
 | Runtime | Node.js 20+ | Host process for routing and scheduling |
 
@@ -225,22 +225,50 @@ Additional mounts appear at `/workspace/extra/{containerPath}` inside the contai
 
 **Mount syntax note:** Read-write mounts use `-v host:container`, but readonly mounts require `--mount "type=bind,source=...,target=...,readonly"` (the `:ro` suffix may not work on all runtimes).
 
-### Claude Authentication
+### Provider and Authentication
 
-Configure authentication in a `.env` file in the project root. Two options:
+Configure provider and credentials in `.env`:
 
-**Option 1: Claude Subscription (OAuth token)**
+**Claude mode (default)**
 ```bash
+AGENT_PROVIDER=claude
 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-```
-The token can be extracted from `~/.claude/.credentials.json` if you're logged in to Claude Code.
-
-**Option 2: Pay-per-use API Key**
-```bash
+# or
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and written to `data/env/env`, then mounted into the container at `/workspace/env-dir/env` and sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent. This workaround is needed because some container runtimes lose `-e` environment variables when using `-i` (interactive mode with piped stdin).
+**OpenAI-compatible mode**
+```bash
+AGENT_PROVIDER=openai
+OPENAI_BASE_URL=https://api.openai.com
+OPENAI_API_PATH=/v1/chat/completions
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=sk-...
+```
+
+**OpenAI-compatible mode with x402**
+```bash
+OPENAI_USE_X402=true
+X402_ROUTER_URL=https://router.example.com
+X402_NETWORK=eip155:8453
+X402_PERMIT_CAP=10000000
+X402_PAYMENT_HEADER=PAYMENT-SIGNATURE
+X402_SIGNER_MODE=env_pk
+X402_PRIVATE_KEY=0x...
+# or static header mode:
+# X402_SIGNER_MODE=static_header
+# X402_STATIC_PAYMENT_HEADER=...
+```
+
+Secrets are read from `.env` by the host and passed to the container over stdin JSON only (not mounted as files). Bash tool commands inside the container unset these secret variables before execution.
+
+### OpenAI+x402 Smoke Test
+
+1. Build container image: `./container/build.sh`
+2. Set `AGENT_PROVIDER=openai` with valid `OPENAI_*` values and `OPENAI_USE_X402=false`
+3. Start app (`npm run dev`) and send one message to confirm baseline OpenAI flow
+4. Enable x402 (`OPENAI_USE_X402=true`) with `X402_SIGNER_MODE=static_header` and fake header to confirm expected 401/402 behavior
+5. Switch to valid signing (`env_pk` + `X402_PRIVATE_KEY`, or valid static header) and confirm successful response
 
 ### Changing the Assistant Name
 

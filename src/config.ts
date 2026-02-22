@@ -8,12 +8,61 @@ import { readEnvFile } from './env.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'AGENT_PROVIDER',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'OPENAI_API_PATH',
+  'OPENAI_USE_X402',
+  'X402_ROUTER_URL',
+  'X402_NETWORK',
+  'X402_PERMIT_CAP',
+  'X402_SIGNER_MODE',
+  'X402_PAYMENT_HEADER',
 ]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER || envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+export const AGENT_PROVIDER = (
+  process.env.AGENT_PROVIDER ||
+  envConfig.AGENT_PROVIDER ||
+  'claude'
+).toLowerCase();
+export const OPENAI_BASE_URL =
+  process.env.OPENAI_BASE_URL ||
+  envConfig.OPENAI_BASE_URL ||
+  'https://api.openai.com';
+export const OPENAI_API_PATH =
+  process.env.OPENAI_API_PATH ||
+  envConfig.OPENAI_API_PATH ||
+  '/v1/chat/completions';
+export const OPENAI_MODEL =
+  process.env.OPENAI_MODEL ||
+  envConfig.OPENAI_MODEL ||
+  'gpt-4o-mini';
+export const OPENAI_USE_X402 =
+  (process.env.OPENAI_USE_X402 || envConfig.OPENAI_USE_X402) === 'true';
+export const X402_ROUTER_URL =
+  process.env.X402_ROUTER_URL ||
+  envConfig.X402_ROUTER_URL ||
+  OPENAI_BASE_URL;
+export const X402_NETWORK =
+  process.env.X402_NETWORK ||
+  envConfig.X402_NETWORK ||
+  'eip155:8453';
+export const X402_PERMIT_CAP =
+  process.env.X402_PERMIT_CAP ||
+  envConfig.X402_PERMIT_CAP ||
+  '10000000';
+export const X402_SIGNER_MODE =
+  process.env.X402_SIGNER_MODE ||
+  envConfig.X402_SIGNER_MODE ||
+  'env_pk';
+export const X402_PAYMENT_HEADER =
+  process.env.X402_PAYMENT_HEADER ||
+  envConfig.X402_PAYMENT_HEADER ||
+  'PAYMENT-SIGNATURE';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 

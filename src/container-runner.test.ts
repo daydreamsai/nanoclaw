@@ -8,12 +8,22 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Mock config
 vi.mock('./config.js', () => ({
+  AGENT_PROVIDER: 'claude',
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
+  OPENAI_API_PATH: '/v1/chat/completions',
+  OPENAI_BASE_URL: 'https://api.openai.com',
+  OPENAI_MODEL: 'gpt-4o-mini',
+  OPENAI_USE_X402: false,
+  X402_NETWORK: 'eip155:8453',
+  X402_PAYMENT_HEADER: 'PAYMENT-SIGNATURE',
+  X402_PERMIT_CAP: '10000000',
+  X402_ROUTER_URL: 'https://api.openai.com',
+  X402_SIGNER_MODE: 'env_pk',
 }));
 
 // Mock logger

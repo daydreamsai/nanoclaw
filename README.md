@@ -132,10 +132,48 @@ Skills we'd love to see:
 - [Claude Code](https://claude.ai/download)
 - [Apple Container](https://github.com/apple/container) (macOS) or [Docker](https://docker.com/products/docker-desktop) (macOS/Linux)
 
+## Provider Configuration
+
+NanoClaw now supports two model-provider paths:
+
+- `claude` (default): current Anthropic/Claude Agent SDK behavior
+- `openai`: OpenAI-compatible chat completions path, with optional x402 payment auth
+
+Set these in `.env`:
+
+```bash
+# Provider switch
+AGENT_PROVIDER=claude            # or: openai
+
+# OpenAI-compatible mode
+OPENAI_BASE_URL=https://api.openai.com
+OPENAI_API_PATH=/v1/chat/completions
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=sk-...
+
+# Optional x402 for OpenAI-compatible mode
+OPENAI_USE_X402=true
+X402_ROUTER_URL=https://router.example.com
+X402_NETWORK=eip155:8453
+X402_PERMIT_CAP=10000000
+X402_PAYMENT_HEADER=PAYMENT-SIGNATURE
+X402_SIGNER_MODE=env_pk          # or: static_header
+X402_PRIVATE_KEY=0x...           # required for env_pk mode
+X402_STATIC_PAYMENT_HEADER=...   # required for static_header mode
+```
+
+## Smoke Test (OpenAI + x402)
+
+1. Rebuild the container image: `./container/build.sh`
+2. Run baseline OpenAI path: set `AGENT_PROVIDER=openai`, `OPENAI_USE_X402=false`, configure `OPENAI_*`, then run `npm run dev` and send one test prompt.
+3. Enable x402 in static mode with a fake header (`X402_SIGNER_MODE=static_header`, `X402_STATIC_PAYMENT_HEADER=invalid`) and confirm you get a 401/402-style failure from router.
+4. Switch to valid signing (`env_pk` + `X402_PRIVATE_KEY`, or valid static header) and confirm prompt succeeds.
+5. Inspect latest run log from `groups/main/logs/container-*.log` for request path and error/success details.
+
 ## Architecture
 
 ```
-WhatsApp (baileys) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
+WhatsApp (baileys) --> SQLite --> Polling loop --> Container (Claude SDK or OpenAI+x402) --> Response
 ```
 
 Single Node.js process. Agents execute in isolated Linux containers with mounted directories. Per-group message queue with concurrency control. IPC via filesystem.

@@ -18,6 +18,28 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { createX402Fetch } from './x402/client.js';
+import { resolveX402SigningSource } from './x402/signature-sources.js';
+
+type ProviderType = 'claude' | 'openai';
+type X402SignerMode = 'env_pk' | 'static_header';
+
+interface ProviderConfig {
+  type: ProviderType;
+  openai?: {
+    baseURL: string;
+    apiPath: string;
+    model: string;
+  };
+  x402?: {
+    enabled: boolean;
+    routerUrl: string;
+    permitCap: string;
+    network: string;
+    signerMode: X402SignerMode;
+    paymentHeader: string;
+  };
+}
 
 interface ContainerInput {
   prompt: string;
@@ -27,6 +49,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  provider?: ProviderConfig;
 }
 
 interface ContainerOutput {
@@ -187,7 +210,13 @@ function createPreCompactHook(): HookCallback {
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+const SECRET_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENAI_API_KEY',
+  'X402_PRIVATE_KEY',
+  'X402_STATIC_PAYMENT_HEADER',
+];
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -489,6 +518,104 @@ async function runQuery(
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
+interface OpenAiChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+function parseOpenAiContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'text' in item && typeof item.text === 'string') {
+          return item.text;
+        }
+        return '';
+      })
+      .join('')
+      .trim();
+    return text;
+  }
+  return '';
+}
+
+async function runOpenAiTurn(input: {
+  prompt: string;
+  provider: ProviderConfig;
+  secrets: Record<string, string | undefined>;
+  conversation: OpenAiChatMessage[];
+}): Promise<string> {
+  const openai = input.provider.openai;
+  if (!openai) {
+    throw new Error('OpenAI provider configuration is missing');
+  }
+
+  let providerFetch: typeof fetch = fetch;
+  const x402 = input.provider.x402;
+  if (x402?.enabled) {
+    const source = resolveX402SigningSource({
+      signerMode: x402.signerMode,
+      paymentHeader: x402.paymentHeader,
+      secrets: input.secrets,
+    });
+
+    if (source.mode === 'static_header') {
+      providerFetch = createX402Fetch({
+        routerUrl: x402.routerUrl,
+        permitCap: x402.permitCap,
+        network: x402.network,
+        staticHeaderName: source.headerName,
+        staticHeaderValue: source.headerValue,
+      });
+    } else {
+      providerFetch = createX402Fetch({
+        routerUrl: x402.routerUrl,
+        permitCap: x402.permitCap,
+        network: x402.network,
+        signatureFn: source.signatureFn,
+      });
+    }
+  }
+
+  input.conversation.push({ role: 'user', content: input.prompt });
+
+  const endpoint = new URL(openai.apiPath, openai.baseURL).toString();
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+  });
+  const apiKey = input.secrets.OPENAI_API_KEY;
+  if (apiKey) {
+    headers.set('Authorization', `Bearer ${apiKey}`);
+  }
+
+  const response = await providerFetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: openai.model,
+      messages: input.conversation,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenAI request failed (${response.status}): ${body.slice(0, 400)}`);
+  }
+
+  const payload = await response.json() as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  };
+  const content = parseOpenAiContent(payload.choices?.[0]?.message?.content);
+  if (content) {
+    input.conversation.push({ role: 'assistant', content });
+  }
+  return content;
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -517,6 +644,10 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
+  const provider = containerInput.provider || { type: 'claude' as const };
+  const providerType: ProviderType = provider.type === 'openai' ? 'openai' : 'claude';
+  log(`Using provider: ${providerType}`);
+
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
@@ -534,26 +665,57 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  const openAiConversation: OpenAiChatMessage[] = [];
+  if (providerType === 'openai') {
+    const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+    if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
+      const sharedSystemContext = fs.readFileSync(globalClaudeMdPath, 'utf-8').trim();
+      if (sharedSystemContext) {
+        openAiConversation.push({
+          role: 'system',
+          content: sharedSystemContext,
+        });
+      }
+    }
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
-      if (queryResult.newSessionId) {
-        sessionId = queryResult.newSessionId;
-      }
-      if (queryResult.lastAssistantUuid) {
-        resumeAt = queryResult.lastAssistantUuid;
-      }
+      if (providerType === 'claude') {
+        const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+        if (queryResult.newSessionId) {
+          sessionId = queryResult.newSessionId;
+        }
+        if (queryResult.lastAssistantUuid) {
+          resumeAt = queryResult.lastAssistantUuid;
+        }
 
-      // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
-      if (queryResult.closedDuringQuery) {
-        log('Close sentinel consumed during query, exiting');
-        break;
+        // If _close was consumed during the query, exit immediately.
+        // Don't emit a session-update marker (it would reset the host's
+        // idle timer and cause a 30-min delay before the next _close).
+        if (queryResult.closedDuringQuery) {
+          log('Close sentinel consumed during query, exiting');
+          break;
+        }
+      } else {
+        const text = await runOpenAiTurn({
+          prompt,
+          provider,
+          secrets: sdkEnv,
+          conversation: openAiConversation,
+        });
+        if (!sessionId) {
+          sessionId = `openai-${Date.now()}`;
+        }
+        writeOutput({
+          status: 'success',
+          result: text || null,
+          newSessionId: sessionId,
+        });
       }
 
       // Emit session update so host can track it

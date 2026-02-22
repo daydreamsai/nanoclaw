@@ -8,12 +8,22 @@ import os from 'os';
 import path from 'path';
 
 import {
+  AGENT_PROVIDER,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  OPENAI_API_PATH,
+  OPENAI_BASE_URL,
+  OPENAI_MODEL,
+  OPENAI_USE_X402,
+  X402_NETWORK,
+  X402_PAYMENT_HEADER,
+  X402_PERMIT_CAP,
+  X402_ROUTER_URL,
+  X402_SIGNER_MODE,
 } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
@@ -43,6 +53,27 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  provider?: ProviderConfig;
+}
+
+type ProviderType = 'claude' | 'openai';
+type X402SignerMode = 'env_pk' | 'static_header';
+
+export interface ProviderConfig {
+  type: ProviderType;
+  openai?: {
+    baseURL: string;
+    apiPath: string;
+    model: string;
+  };
+  x402?: {
+    enabled: boolean;
+    routerUrl: string;
+    permitCap: string;
+    network: string;
+    signerMode: X402SignerMode;
+    paymentHeader: string;
+  };
 }
 
 export interface ContainerOutput {
@@ -187,7 +218,37 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  return readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'OPENAI_API_KEY',
+    'X402_PRIVATE_KEY',
+    'X402_STATIC_PAYMENT_HEADER',
+  ]);
+}
+
+function getProviderConfig(): ProviderConfig {
+  const providerType = AGENT_PROVIDER === 'openai' ? 'openai' : 'claude';
+  if (providerType === 'claude') {
+    return { type: 'claude' };
+  }
+
+  return {
+    type: 'openai',
+    openai: {
+      baseURL: OPENAI_BASE_URL,
+      apiPath: OPENAI_API_PATH,
+      model: OPENAI_MODEL,
+    },
+    x402: {
+      enabled: OPENAI_USE_X402,
+      routerUrl: X402_ROUTER_URL,
+      permitCap: X402_PERMIT_CAP,
+      network: X402_NETWORK,
+      signerMode: X402_SIGNER_MODE === 'static_header' ? 'static_header' : 'env_pk',
+      paymentHeader: X402_PAYMENT_HEADER,
+    },
+  };
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
@@ -271,6 +332,7 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
+    input.provider = input.provider || getProviderConfig();
     input.secrets = readSecrets();
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
